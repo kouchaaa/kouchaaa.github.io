@@ -1,0 +1,852 @@
+<!doctype html>
+<html lang="ja" class="h-full bg-white">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TripGroup</title>
+
+    <!-- Fonts (Inter for Latin/digits, IBM Plex Sans JP for Japanese) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP&family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
+
+    <!-- Tailwind CSS (Play CDN for quick demo) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              brand: {
+                50: '#eff6ff',
+                100: '#dbeafe',
+                200: '#bfdbfe',
+                300: '#93c5fd',
+                400: '#60a5fa',
+                500: '#3b82f6',
+                600: '#2563eb',
+                700: '#1d4ed8',
+                800: '#1e40af',
+                900: '#1e3a8a',
+              }
+            },
+            keyframes: {
+              fadeIn: { '0%': {opacity:0, transform:'translateY(4px)'}, '100%': {opacity:1, transform:'translateY(0)'} },
+              pop: { '0%': {transform:'scale(0.95)', opacity:0}, '100%': {transform:'scale(1)', opacity:1} },
+            },
+            animation: {
+              fade: 'fadeIn 300ms ease-out',
+              pop: 'pop 200ms ease-out',
+            },
+          }
+        }
+      }
+    </script>
+
+    <!-- Font Awesome (icons) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" integrity="sha512-Sl1SNTVjG9p2oK7r8z2kQYqY8y3xT9E1wq0iQm1m2+J3C0l5+Y7n8z0m2Zq0m9mW0r1p2O3t4u5v6w7x8y9z0w==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+    <!-- Leaflet (OpenStreetMap) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-o9N1j7kGStbTzP4z5xqQ7+8WcJ6iYG3PaP5E9O+V1bM=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-o9S1j2qf2mI7H4q1E2z3jJm2S0jQ3i7lQf9JQZ2GgRE=" crossorigin=""></script>
+
+    <!-- React (CDN) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+      :root { color-scheme: light; }
+      html, body { height: 100%; }
+      body { font-family: Inter, "IBM Plex Sans JP", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji"; }
+      /* Ensure Inter for Latin and IBM Plex Sans JP fallback for JP glyphs */
+      .icon-btn { @apply p-3 rounded-full shadow-md bg-brand-600 text-white hover:bg-brand-700 transition; }
+      .card { @apply bg-white border border-gray-200 rounded-2xl shadow-sm; }
+      .btn { @apply inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition; }
+      .btn-primary { @apply bg-brand-600 text-white hover:bg-brand-700; }
+      .btn-secondary { @apply bg-gray-100 hover:bg-gray-200; }
+      .btn-danger { @apply bg-red-600 text-white hover:bg-red-700; }
+      .chip { @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-700; }
+      .input { @apply w-full rounded-xl border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-brand-500; }
+      .label { @apply text-sm text-gray-600; }
+      .fab { position: fixed; right: 1rem; bottom: 5.5rem; z-index: 40; }
+      .leaflet-container { z-index: 0; border-radius: 1rem; }
+      .footer { position: fixed; bottom: 0; left: 0; right: 0; z-index: 50; }
+    </style>
+  </head>
+  <body class="h-full bg-white text-gray-900">
+    <div id="root" class="h-full"></div>
+
+    <script type="text/babel">
+      const { useState, useEffect, useMemo, useRef } = React;
+
+      // ----------------- Utilities & Storage -----------------
+      const STORAGE_KEY = 'tripgroup_data_v1';
+      const SESSION_KEY = 'tripgroup_session_v1';
+
+      const nowISO = () => new Date().toISOString();
+      const formatDateTime = (iso) => {
+        const d = new Date(iso);
+        const pad = (n) => n.toString().padStart(2,'0');
+        const date = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+        const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        return { date, time };
+      };
+      const formatJPDateTime = (iso) => {
+        const d = new Date(iso);
+        const Y = d.getFullYear();
+        const M = d.getMonth()+1;
+        const D = d.getDate();
+        const h = d.getHours();
+        const m = d.getMinutes().toString().padStart(2,'0');
+        return `${Y}年${M}月${D}日 ${h}:${m}`;
+      };
+      const minutesDiff = (a, b) => Math.round((new Date(a)-new Date(b))/60000);
+
+      const loadData = () => {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) return JSON.parse(saved);
+        // Seed data
+        const seed = {
+          users: [
+            { id: 'u1', name: '管理者', role: 'admin', password: 'admin123', initialBalance: 20000, showBalance: true, line: 'https://line.me/', discord: 'https://discord.com/', keepSignedIn: true },
+            { id: 'u2', name: '田中 太郎', role: 'member', password: 'taro123', initialBalance: 15000, showBalance: true, line: 'https://line.me/', discord: 'https://discord.com/' },
+            { id: 'u3', name: '山田 花子', role: 'member', password: 'hanako123', initialBalance: 18000, showBalance: false, line: 'https://line.me/', discord: 'https://discord.com/' },
+          ],
+          schedules: [
+            { id: 's1', at: new Date(new Date().setHours(9, 0, 0, 0)).toISOString(), title: '集合（東京駅）' },
+            { id: 's2', at: new Date(new Date().setHours(11, 30, 0, 0)).toISOString(), title: '昼食（築地）' },
+            { id: 's3', at: new Date(new Date().setHours(14, 0, 0, 0)).toISOString(), title: '浅草観光' },
+            { id: 's4', at: new Date(new Date().setHours(18, 0, 0, 0)).toISOString(), title: 'ホテルチェックイン' },
+          ],
+          transactions: [
+            { id: 't1', userId: 'u2', datetime: new Date(new Date().setHours(10, 0, 0, 0)).toISOString(), kind: '支出', category: '交通', amount: 980, memo: 'JR' },
+            { id: 't2', userId: 'u3', datetime: new Date(new Date().setHours(12, 40, 0, 0)).toISOString(), kind: '立替', category: '食事', amount: 3600, memo: 'みんなの分' },
+            { id: 't3', userId: 'u1', datetime: new Date(new Date().setHours(15, 10, 0, 0)).toISOString(), kind: '支出', category: '観光', amount: 1200, memo: '入場料' },
+          ],
+          places: [
+            { id: 'p1', name: '浅草寺', address: '東京都台東区浅草2-3-1', lat: 35.7148, lng: 139.7967, who: ['u2','u3'] },
+          ],
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(seed));
+        return seed;
+      };
+
+      const saveData = (data) => localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+
+      const getSession = () => {
+        const s = localStorage.getItem(SESSION_KEY);
+        return s ? JSON.parse(s) : null;
+      };
+      const setSession = (session) => localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+      const clearSession = () => localStorage.removeItem(SESSION_KEY);
+
+      // ----------------- App -----------------
+      function App(){
+        const [data, setData] = useState(loadData());
+        const [session, setSess] = useState(getSession());
+        const [route, setRoute] = useState('#/home');
+
+        useEffect(()=>{
+          const onHash = ()=> setRoute(location.hash || '#/home');
+          window.addEventListener('hashchange', onHash);
+          if (!location.hash) location.hash = '#/home';
+          return ()=> window.removeEventListener('hashchange', onHash);
+        },[]);
+
+        const currentUser = useMemo(()=> data.users.find(u=> u.id === session?.userId) || null, [data, session]);
+
+        const api = {
+          login: (userId, keep)=>{ setSess({ userId }); if(keep) setSession({ userId }); },
+          logout: ()=>{ setSess(null); clearSession(); },
+          updateUser: (userId, patch)=>{
+            setData(prev=>{ const users = prev.users.map(u=> u.id===userId? {...u, ...patch}:u); const next={...prev, users}; saveData(next); return next; });
+          },
+          addSchedule: (item)=> setData(prev=>{ const next={...prev, schedules:[...prev.schedules, item].sort((a,b)=> new Date(a.at)-new Date(b.at))}; saveData(next); return next; }),
+          updateSchedule: (id, patch)=> setData(prev=>{ const next={...prev, schedules: prev.schedules.map(s=> s.id===id? {...s, ...patch}: s)}; saveData(next); return next; }),
+          deleteSchedule: (id)=> setData(prev=>{ const next={...prev, schedules: prev.schedules.filter(s=> s.id!==id)}; saveData(next); return next; }),
+          addTx: (tx)=> setData(prev=>{ const next={...prev, transactions:[tx, ...prev.transactions]}; saveData(next); return next; }),
+          updateTx: (id, patch)=> setData(prev=>{ const next={...prev, transactions: prev.transactions.map(t=> t.id===id? {...t, ...patch}: t)}; saveData(next); return next; }),
+          deleteTx: (id)=> setData(prev=>{ const next={...prev, transactions: prev.transactions.filter(t=> t.id!==id)}; saveData(next); return next; }),
+          addPlace: (p)=> setData(prev=>{ const next={...prev, places:[...prev.places, p]}; saveData(next); return next; }),
+          updatePlace: (id, patch)=> setData(prev=>{ const next={...prev, places: prev.places.map(p=> p.id===id? {...p, ...patch}: p)}; saveData(next); return next; }),
+          deletePlace: (id)=> setData(prev=>{ const next={...prev, places: prev.places.filter(p=> p.id!==id)}; saveData(next); return next; }),
+        };
+
+        if (!currentUser) return <Login data={data} api={api}/>;
+
+        return (
+          <div className="h-full flex flex-col">
+            <Header data={data} currentUser={currentUser}/>
+            <main className="flex-1 pb-24 container mx-auto px-4 pt-3 animate-fade">
+              {route==="#/home" && <Home data={data} currentUser={currentUser}/>} 
+              {route==="#/schedule" && <Schedule data={data} api={api} currentUser={currentUser}/>} 
+              {route==="#/wallet" && <Wallet data={data} api={api} currentUser={currentUser}/>} 
+              {route==="#/map" && <MapPage data={data} api={api} currentUser={currentUser}/>} 
+              {route==="#/members" && <Members data={data} api={api} currentUser={currentUser}/>} 
+              {route==="#/settings" && <Settings data={data} api={api} currentUser={currentUser} onLogout={()=> api.logout()}/>}
+            </main>
+            <Footer/>
+          </div>
+        );
+      }
+
+      // ----------------- Header -----------------
+      function Header({data, currentUser}){
+        const [time, setTime] = useState(new Date());
+        useEffect(()=>{ const id = setInterval(()=> setTime(new Date()), 1000); return ()=> clearInterval(id); },[]);
+        const next = useMemo(()=> data.schedules.filter(s=> new Date(s.at) >= time).sort((a,b)=> new Date(a.at)-new Date(b.at))[0] || null, [data, time]);
+        const mins = next? minutesDiff(next.at, time): null;
+        return (
+          <header className="border-b bg-white/70 backdrop-blur sticky top-0 z-40">
+            <div className="container mx-auto px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="h-9 w-9 rounded-xl bg-brand-600 text-white grid place-items-center font-bold">TG</div>
+                <div>
+                  <div className="text-lg font-semibold">{time.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
+                  <div className="text-xs text-gray-500">{time.toLocaleDateString('ja-JP', { dateStyle: 'medium' })}</div>
+                </div>
+              </div>
+              <div className="text-sm text-gray-600">こんにちは、<span className="font-medium">{currentUser.name}</span> さん</div>
+            </div>
+            {next && (
+              <div className="bg-brand-50 border-t border-b border-brand-100">
+                <div className="container mx-auto px-4 py-2 text-sm text-brand-800 flex items-center gap-2">
+                  <i className="fa-solid fa-bell"></i>
+                  次の予定: <span className="font-medium">{formatJPDateTime(next.at)}</span>「{next.title}」
+                  <span className="chip ml-2">残り {mins} 分</span>
+                </div>
+              </div>
+            )}
+          </header>
+        );
+      }
+
+      // ----------------- Footer -----------------
+      function Footer(){
+        const item = (hash, icon, label)=> (
+          <a href={hash} className={`flex flex-col items-center justify-center gap-1 text-xs font-medium w-full py-2 transition hover:text-brand-700 ${location.hash===hash? 'text-brand-700':'text-gray-600'}`}> 
+            <i className={`fa-solid ${icon} text-lg`}></i>
+            {label}
+          </a>
+        );
+        return (
+          <nav className="footer bg-white border-t">
+            <div className="max-w-md mx-auto grid grid-cols-6"> 
+              {item('#/home','fa-house','ホーム')}
+              {item('#/schedule','fa-calendar','スケジュール')}
+              {item('#/wallet','fa-wallet','お財布')}
+              {item('#/map','fa-map','マップ')}
+              {item('#/members','fa-users','メンバー')}
+              {item('#/settings','fa-gear','設定')}
+            </div>
+          </nav>
+        );
+      }
+
+      // ----------------- Login -----------------
+      function Login({data, api}){
+        const [userId, setUserId] = useState(data.users[0]?.id || '');
+        const [pw, setPw] = useState('');
+        const [keep, setKeep] = useState(true);
+        const [err, setErr] = useState('');
+        const tryLogin = ()=>{
+          const u = data.users.find(u=> u.id===userId);
+          if (!u) return setErr('ユーザーが見つかりません');
+          if (pw !== u.password) return setErr('パスワードが違います');
+          api.login(u.id, keep);
+        };
+        return (
+          <div className="min-h-full grid place-items-center bg-gradient-to-b from-white to-brand-50">
+            <div className="card w-full max-w-md p-6 animate-pop">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="h-10 w-10 rounded-2xl bg-black text-white grid place-items-center font-bold">TG</div>
+                <h1 className="text-xl font-semibold">TripGroup ログイン</h1>
+              </div>
+              <div className="mb-3">
+                <label className="label">ユーザー</label>
+                <select className="input" value={userId} onChange={e=> setUserId(e.target.value)}>
+                  {data.users.map(u=> <option key={u.id} value={u.id}>{u.name} {u.role==='admin'?'（管理者）':''}</option>)}
+                </select>
+              </div>
+              <div className="mb-3">
+                <label className="label">パスワード</label>
+                <input className="input" type="password" value={pw} onChange={e=> setPw(e.target.value)} placeholder="••••••"/>
+              </div>
+              {err && <div className="text-sm text-red-600 mb-2">{err}</div>}
+              <label className="flex items-center gap-2 text-sm mb-4">
+                <input type="checkbox" checked={keep} onChange={e=> setKeep(e.target.checked)} />
+                ログイン状態を維持する
+              </label>
+              <button className="btn btn-primary w-full" onClick={tryLogin}><i className="fa-solid fa-right-to-bracket"></i> ログイン</button>
+              <p className="text-xs text-gray-500 mt-4">※デモ用途です。パスワード等はブラウザのローカルに保存されます。</p>
+            </div>
+          </div>
+        );
+      }
+
+      // ----------------- Home -----------------
+      function Home({data, currentUser}){
+        const calcBalance = (uid)=>{
+          const u = data.users.find(x=> x.id===uid);
+          const txs = data.transactions.filter(t=> t.userId===uid);
+          const sum = (kind)=> txs.filter(t=> t.kind===kind).reduce((a,b)=> a + Number(b.amount||0), 0);
+          const balance = (u?.initialBalance||0) + sum('収入') - sum('支出') - sum('立替');
+          return {balance, lastPersonal: txs.slice(0,5), lastGroup: data.transactions.slice(0,5)};
+        };
+        const { balance, lastPersonal, lastGroup } = useMemo(()=> calcBalance(currentUser.id), [data, currentUser]);
+
+        const next = useMemo(()=> data.schedules.filter(s=> new Date(s.at) >= new Date()).sort((a,b)=> new Date(a.at)-new Date(b.at))[0] || null, [data]);
+        const mins = next? minutesDiff(next.at, new Date()): null;
+
+        return (
+          <div className="grid gap-4 max-w-3xl mx-auto">
+            <section className="card p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm text-gray-500">現在の所持金</div>
+                  <div className="text-2xl font-semibold tracking-tight">¥{balance.toLocaleString()}</div>
+                </div>
+                <a href="#/wallet" className="btn btn-secondary">お財布へ</a>
+              </div>
+            </section>
+
+            <section className="grid md:grid-cols-2 gap-4">
+              <div className="card p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <h2 className="font-semibold">自分の直近</h2>
+                  <a href="#/wallet" className="text-sm text-brand-700">もっと見る</a>
+                </div>
+                <TxList items={lastPersonal} users={data.users}/>
+              </div>
+              <div className="card p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <h2 className="font-semibold">グループの履歴</h2>
+                  <a href="#/wallet" className="text-sm text-brand-700">もっと見る</a>
+                </div>
+                <TxList items={lastGroup} users={data.users}/>
+              </div>
+            </section>
+
+            <section className="card p-4">
+              <div className="flex items-center gap-2 text-sm text-gray-600">
+                <i className="fa-solid fa-calendar"></i>
+                次のスケジュール
+              </div>
+              {next ? (
+                <div className="mt-2 flex items-center justify-between">
+                  <div>
+                    <div className="text-lg font-medium">{formatJPDateTime(next.at)}</div>
+                    <div className="text-gray-700">{next.title}</div>
+                  </div>
+                  <span className="chip">残り {mins} 分</span>
+                </div>
+              ) : <div className="text-gray-500 mt-2">予定はありません</div>}
+            </section>
+          </div>
+        );
+      }
+
+      function TxList({items, users}){
+        const name = (id)=> users.find(u=>u.id===id)?.name || '不明';
+        const sign = (k)=> k==='収入'? '+': '-';
+        return (
+          <ul className="divide-y">
+            {items.length===0 && <li className="py-3 text-sm text-gray-500">なし</li>}
+            {items.map(t=> (
+              <li key={t.id} className="py-3 flex items-center justify-between">
+                <div>
+                  <div className="text-sm text-gray-500">{formatJPDateTime(t.datetime)} ・ {name(t.userId)}</div>
+                  <div className="text-sm">{t.category} {t.memo? `・${t.memo}`:''} <span className="chip ml-2">{t.kind}</span></div>
+                </div>
+                <div className="font-medium">{sign(t.kind)}¥{Number(t.amount).toLocaleString()}</div>
+              </li>
+            ))}
+          </ul>
+        );
+      }
+
+      // ----------------- Schedule -----------------
+      function Schedule({data, api, currentUser}){
+        const isAdmin = currentUser.role==='admin';
+        const [form, setForm] = useState({ at: new Date(new Date().setMinutes( new Date().getMinutes()+10 )).toISOString(), title:'' });
+        const add = ()=>{
+          if (!form.title.trim()) return;
+          api.addSchedule({ id: crypto.randomUUID(), at: form.at, title: form.title.trim() });
+          setForm({ at: new Date().toISOString(), title:'' });
+        };
+        const nowStr = ()=> setForm(f=> ({...f, at: new Date().toISOString()}));
+
+        const items = [...data.schedules].sort((a,b)=> new Date(a.at)-new Date(b.at));
+        const currentIdx = items.findIndex(s=> new Date(s.at) >= new Date()) - 1; // last one passed
+
+        return (
+          <div className="max-w-3xl mx-auto">
+            {isAdmin && (
+              <div className="card p-4 mb-4 animate-fade">
+                <h3 className="font-semibold mb-2">予定の追加（管理者）</h3>
+                <div className="grid md:grid-cols-3 gap-3 items-end">
+                  <div>
+                    <label className="label">日時</label>
+                    <input type="datetime-local" className="input" value={`${formatDateTime(form.at).date}T${formatDateTime(form.at).time}`} onChange={e=> setForm({...form, at: new Date(e.target.value).toISOString()})}/>
+                    <button className="btn btn-secondary mt-2" onClick={nowStr}>現在時刻</button>
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="label">予定</label>
+                    <input className="input" value={form.title} onChange={e=> setForm({...form, title: e.target.value})} placeholder="例: 昼食（築地）" />
+                  </div>
+                </div>
+                <div className="mt-3 flex gap-2">
+                  <button className="btn btn-primary" onClick={add}><i className="fa-solid fa-plus"></i> 追加</button>
+                </div>
+              </div>
+            )}
+
+            <div className="relative">
+              <ol className="relative border-s border-gray-200">
+                {items.map((s, idx)=>{
+                  const isCurrent = new Date()>= new Date(s.at) && (idx===items.length-1 || new Date() < new Date(items[idx+1].at));
+                  return (
+                    <li key={s.id} className="mb-6 ms-6">
+                      <span className={`absolute -start-3 flex h-6 w-6 items-center justify-center rounded-full ring-2 ${isCurrent? 'bg-brand-600 ring-brand-200 text-white':'bg-white ring-gray-300 text-gray-600'}`}>
+                        <i className="fa-solid fa-clock text-xs"></i>
+                      </span>
+                      <time className="mb-1 text-sm text-gray-500 block">{formatJPDateTime(s.at)}</time>
+                      <h3 className={`font-medium ${isCurrent? 'text-brand-700':''}`}>{s.title}</h3>
+                      {isAdmin && (
+                        <div className="mt-1 flex gap-2 text-sm">
+                          <button className="btn btn-secondary" onClick={()=>{
+                            const title = prompt('予定を編集', s.title) ?? s.title;
+                            api.updateSchedule(s.id, { title });
+                          }}>編集</button>
+                          <button className="btn btn-danger" onClick={()=> api.deleteSchedule(s.id)}>削除</button>
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          </div>
+        );
+      }
+
+      // ----------------- Wallet -----------------
+      function Wallet({data, api, currentUser}){
+        const [tab, setTab] = useState('group'); // group | personal
+        const [modal, setModal] = useState(null); // {mode:'create'|'edit', tx}
+        const isOwn = (t)=> t.userId===currentUser.id;
+
+        const myTx = data.transactions.filter(isOwn);
+        const groupTx = data.transactions;
+
+        const sumBy = (txs, kind)=> txs.filter(t=>t.kind===kind).reduce((a,b)=> a+Number(b.amount),0);
+        const myBalance = (u=>{
+          const user = data.users.find(x=> x.id===currentUser.id);
+          return (user.initialBalance||0) + sumBy(myTx,'収入') - sumBy(myTx,'支出') - sumBy(myTx,'立替');
+        })();
+
+        const kinds = ['収入','支出','立替'];
+        const categories = ['食事','交通','宿泊','観光','買い物','その他'];
+
+        const openCreate = ()=> setModal({ mode:'create', tx: { id: crypto.randomUUID(), userId: currentUser.id, datetime: nowISO(), kind:'支出', category:'その他', amount: 0, memo:'' } });
+        const openEdit = (t)=> setModal({ mode:'edit', tx: {...t} });
+        const save = ()=>{
+          const t = modal.tx; 
+          if (modal.mode==='create') api.addTx(t); else api.updateTx(t.id, t);
+          setModal(null);
+        };
+        const del = ()=>{ api.deleteTx(modal.tx.id); setModal(null); };
+
+        const Row = ({t})=> (
+          <tr className="hover:bg-gray-50 cursor-pointer" onClick={()=> isOwn(t) && openEdit(t)}>
+            <td className="px-3 py-2 text-sm text-gray-500 whitespace-nowrap">{formatJPDateTime(t.datetime)}</td>
+            <td className="px-3 py-2 text-sm"><span className="chip">{t.kind}</span></td>
+            <td className="px-3 py-2 text-sm">{t.category}</td>
+            <td className="px-3 py-2 text-right font-medium">{t.kind==='収入'? '+':'-'}¥{Number(t.amount).toLocaleString()}</td>
+            <td className="px-3 py-2 text-sm text-gray-500">{data.users.find(u=>u.id===t.userId)?.name}</td>
+            <td className="px-3 py-2 text-sm text-gray-500">{t.memo||''}</td>
+          </tr>
+        );
+
+        const Table = ({txs})=> (
+          <div className="overflow-x-auto">
+            <table className="min-w-full">
+              <thead>
+                <tr className="text-left text-xs text-gray-500 border-b">
+                  <th className="px-3 py-2">日付</th>
+                  <th className="px-3 py-2">種別</th>
+                  <th className="px-3 py-2">カテゴリ</th>
+                  <th className="px-3 py-2 text-right">金額</th>
+                  <th className="px-3 py-2">ユーザー</th>
+                  <th className="px-3 py-2">メモ</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {txs.length===0 && (<tr><td className="px-3 py-6 text-sm text-gray-500" colSpan="6">履歴はありません</td></tr>)}
+                {txs.map(t=> <Row key={t.id} t={t}/>) }
+              </tbody>
+            </table>
+          </div>
+        );
+
+        return (
+          <div className="max-w-4xl mx-auto relative">
+            <div className="grid md:grid-cols-3 gap-4 mb-4">
+              <div className="card p-4">
+                <div className="text-sm text-gray-500">現在の所持金</div>
+                <div className="text-2xl font-semibold">¥{myBalance.toLocaleString()}</div>
+              </div>
+              <div className="card p-4">
+                <div className="text-sm text-gray-500">自分の支出合計</div>
+                <div className="text-xl font-semibold">¥{sumBy(myTx,'支出').toLocaleString()}</div>
+              </div>
+              <div className="card p-4">
+                <div className="text-sm text-gray-500">自分の立替合計</div>
+                <div className="text-xl font-semibold">¥{sumBy(myTx,'立替').toLocaleString()}</div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 mb-3">
+              <button className={`btn ${tab==='group'? 'btn-primary':'btn-secondary'}`} onClick={()=> setTab('group')}><i className="fa-solid fa-list"></i> 一覧</button>
+              <button className={`btn ${tab==='personal'? 'btn-primary':'btn-secondary'}`} onClick={()=> setTab('personal')}><i className="fa-solid fa-user"></i> 個人</button>
+            </div>
+
+            <div className="card p-4 animate-fade">
+              {tab==='group' ? <Table txs={groupTx}/> : <Table txs={myTx}/>}
+            </div>
+
+            <button className="fab icon-btn" title="追加" onClick={openCreate}><i className="fa-solid fa-plus"></i></button>
+
+            {modal && (
+              <div className="fixed inset-0 bg-black/30 grid place-items-center z-50 animate-fade" onClick={()=> setModal(null)}>
+                <div className="card w-full max-w-lg p-4 animate-pop" onClick={e=> e.stopPropagation()}>
+                  <h3 className="font-semibold mb-3">{modal.mode==='create'? '金額の追加':'履歴の編集'}</h3>
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="label">日付</label>
+                      <input type="date" className="input" value={formatDateTime(modal.tx.datetime).date} onChange={e=> setModal(m=> ({...m, tx:{...m.tx, datetime: new Date(`${e.target.value}T${formatDateTime(m.tx.datetime).time}`).toISOString()}}))} />
+                    </div>
+                    <div>
+                      <label className="label">時刻</label>
+                      <input type="time" className="input" value={formatDateTime(modal.tx.datetime).time} onChange={e=> setModal(m=> ({...m, tx:{...m.tx, datetime: new Date(`${formatDateTime(m.tx.datetime).date}T${e.target.value}`).toISOString()}}))} />
+                      <button className="btn btn-secondary mt-2" onClick={()=> setModal(m=> ({...m, tx:{...m.tx, datetime: nowISO()}}))}>現在時刻</button>
+                    </div>
+                    <div>
+                      <label className="label">種別</label>
+                      <select className="input" value={modal.tx.kind} onChange={e=> setModal(m=> ({...m, tx:{...m.tx, kind: e.target.value}}))}>
+                        {kinds.map(k=> <option key={k} value={k}>{k}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="label">カテゴリ</label>
+                      <select className="input" value={modal.tx.category} onChange={e=> setModal(m=> ({...m, tx:{...m.tx, category: e.target.value}}))}>
+                        {categories.map(c=> <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="label">金額</label>
+                      <input type="number" className="input" value={modal.tx.amount} onChange={e=> setModal(m=> ({...m, tx:{...m.tx, amount: Number(e.target.value)}}))} />
+                    </div>
+                    <div>
+                      <label className="label">メモ（任意）</label>
+                      <input className="input" value={modal.tx.memo} onChange={e=> setModal(m=> ({...m, tx:{...m.tx, memo: e.target.value}}))} placeholder="例: 昼食 3人分"/>
+                    </div>
+                  </div>
+                  <div className="mt-4 flex justify-between">
+                    {modal.mode==='edit' ? (
+                      <button className="btn btn-danger" onClick={del}><i className="fa-solid fa-trash"></i> 削除</button>
+                    ) : <span />}
+                    <div className="flex gap-2">
+                      <button className="btn btn-secondary" onClick={()=> setModal(null)}>キャンセル</button>
+                      <button className="btn btn-primary" onClick={save}>保存</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      // ----------------- Map -----------------
+      function MapPage({data, api, currentUser}){
+        const mapRef = useRef(null);
+        const mapObj = useRef(null);
+        const [adding, setAdding] = useState(false);
+        const [form, setForm] = useState({ name:'', address:'', who: [currentUser.id], lat:null, lng:null, search:'', results:[] });
+
+        useEffect(()=>{
+          if (!mapRef.current) return;
+          if (mapObj.current) return; // init once
+          mapObj.current = L.map(mapRef.current).setView([35.6812, 139.7671], 12); // Tokyo default
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; OpenStreetMap contributors'
+          }).addTo(mapObj.current);
+
+          if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition((pos)=>{
+              const { latitude, longitude } = pos.coords;
+              mapObj.current.setView([latitude, longitude], 14);
+              const my = L.marker([latitude, longitude], { title:'現在地' }).addTo(mapObj.current);
+              my.bindPopup('現在地');
+            });
+          }
+        },[]);
+
+        useEffect(()=>{
+          if (!mapObj.current) return;
+          // Clear previous markers (except tile layer)
+          mapObj.current.eachLayer(layer=>{
+            if (layer instanceof L.Marker && !layer._popup?.getContent()?.includes('現在地')) mapObj.current.removeLayer(layer);
+          });
+          // Add saved places
+          data.places.forEach(p=>{
+            const m = L.marker([p.lat, p.lng]).addTo(mapObj.current);
+            const members = p.who.map(id=> data.users.find(u=>u.id===id)?.name).join('、');
+            m.bindPopup(`<div><div class="font-semibold">${p.name}</div><div class="text-sm text-gray-600">${p.address}</div><div class="text-sm">誰が行きたい: ${members||'未設定'}</div></div>`);
+          });
+        },[data]);
+
+        const search = async ()=>{
+          if (!form.search.trim()) return;
+          const q = encodeURIComponent(form.search.trim());
+          const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=5&accept-language=ja&q=${q}`;
+          try {
+            const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+            const json = await res.json();
+            setForm(f=> ({...f, results: json }));
+          } catch (e){
+            alert('検索に失敗しました');
+          }
+        };
+
+        const selectResult = (r)=>{
+          const lat = Number(r.lat), lng = Number(r.lon);
+          setForm(f=> ({...f, name: r.display_name.split(',')[0], address: r.display_name, lat, lng, results: [] }));
+          if (mapObj.current){ mapObj.current.setView([lat,lng], 16); L.marker([lat,lng]).addTo(mapObj.current); }
+        };
+
+        const save = ()=>{
+          if (!form.name || form.lat==null) return alert('候補から場所を選択してください');
+          api.addPlace({ id: crypto.randomUUID(), name: form.name, address: form.address, lat: form.lat, lng: form.lng, who: form.who });
+          setAdding(false);
+          setForm({ name:'', address:'', who:[currentUser.id], lat:null, lng:null, search:'', results:[] });
+        };
+
+        return (
+          <div className="max-w-4xl mx-auto">
+            <div ref={mapRef} className="h-[60vh] card overflow-hidden"></div>
+
+            <button className="fab icon-btn" onClick={()=> setAdding(true)}><i className="fa-solid fa-plus"></i></button>
+
+            {adding && (
+              <div className="fixed inset-0 bg-black/30 grid place-items-center z-50 animate-fade" onClick={()=> setAdding(false)}>
+                <div className="card w-full max-w-xl p-4 animate-pop" onClick={e=> e.stopPropagation()}>
+                  <h3 className="font-semibold mb-3">行きたい場所を追加</h3>
+                  <div className="mb-3">
+                    <label className="label">住所 / 地名 を検索</label>
+                    <div className="flex gap-2">
+                      <input className="input flex-1" placeholder="例: 浅草寺" value={form.search} onChange={e=> setForm({...form, search: e.target.value})} onKeyDown={e=> e.key==='Enter' && search()} />
+                      <button className="btn btn-secondary" onClick={search}><i className="fa-solid fa-magnifying-glass"></i> 検索</button>
+                    </div>
+                    {form.results.length>0 && (
+                      <ul className="mt-2 border rounded-xl max-h-48 overflow-auto divide-y">
+                        {form.results.map(r=> (
+                          <li key={r.place_id} className="p-2 text-sm hover:bg-gray-50 cursor-pointer" onClick={()=> selectResult(r)}>
+                            {r.display_name}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="label">地名</label>
+                      <input className="input" value={form.name} onChange={e=> setForm({...form, name: e.target.value})}/>
+                    </div>
+                    <div>
+                      <label className="label">住所</label>
+                      <input className="input" value={form.address} onChange={e=> setForm({...form, address: e.target.value})}/>
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="label">誰が行きたいか</label>
+                      <div className="flex flex-wrap gap-2">
+                        {data.users.map(u=> (
+                          <label key={u.id} className="chip cursor-pointer select-none">
+                            <input type="checkbox" className="mr-1" checked={form.who.includes(u.id)} onChange={(e)=> setForm(f=> ({...f, who: e.target.checked? [...f.who, u.id]: f.who.filter(x=> x!==u.id)}))} />
+                            {u.name}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex justify-end gap-2">
+                    <button className="btn btn-secondary" onClick={()=> setAdding(false)}>キャンセル</button>
+                    <button className="btn btn-primary" onClick={save}>保存</button>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-3">※地図はOpenStreetMap / Leaflet、検索はNominatim（無料）を利用しています。利用規約とレート制限にご注意ください。</p>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      // ----------------- Members -----------------
+      function Members({data, api, currentUser}){
+        const [selected, setSelected] = useState(null); // user id
+        const isAdmin = currentUser.role==='admin';
+
+        const balanceOf = (uid)=>{
+          const u = data.users.find(x=> x.id===uid);
+          const txs = data.transactions.filter(t=> t.userId===uid);
+          const sum = (k)=> txs.filter(t=>t.kind===k).reduce((a,b)=> a+Number(b.amount),0);
+          return (u.initialBalance||0) + sum('収入') - sum('支出') - sum('立替');
+        };
+
+        const Card = ({u})=> (
+          <div className="card p-4 hover:shadow-md transition cursor-pointer" onClick={()=> setSelected(u.id)}>
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="font-medium">{u.name} {u.role==='admin' && <span className="chip ml-2">管理者</span>}</div>
+                { (u.showBalance || currentUser.id===u.id || isAdmin) ? (
+                  <div className="text-sm text-gray-600">所持金: ¥{balanceOf(u.id).toLocaleString()}</div>
+                ) : (
+                  <div className="text-sm text-gray-400">所持金: 非公開</div>
+                )}
+              </div>
+              <i className="fa-solid fa-chevron-right text-gray-400"></i>
+            </div>
+          </div>
+        );
+
+        const Detail = ({u})=> (
+          <div className="fixed inset-0 bg-black/30 grid place-items-center z-50 animate-fade" onClick={()=> setSelected(null)}>
+            <div className="card w-full max-w-md p-4 animate-pop" onClick={e=> e.stopPropagation()}>
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold">{u.name}</h3>
+                <button className="btn btn-secondary" onClick={()=> setSelected(null)}>閉じる</button>
+              </div>
+              <div className="mt-3 grid gap-3">
+                <a className="btn btn-primary" href={u.line} target="_blank" rel="noreferrer"><i className="fa-brands fa-line"></i> LINE</a>
+                <a className="btn btn-secondary" href={u.discord} target="_blank" rel="noreferrer"><i className="fa-brands fa-discord"></i> Discord</a>
+                <div className="text-sm text-gray-600">所持金: { (u.showBalance || currentUser.id===u.id || isAdmin) ? `¥${balanceOf(u.id).toLocaleString()}` : '非公開'}</div>
+              </div>
+              {isAdmin && (
+                <div className="mt-4 border-t pt-3">
+                  <h4 className="font-medium mb-2">（管理者）プロフィール編集</h4>
+                  <AdminUserEditor user={u} onSave={(patch)=> api.updateUser(u.id, patch)} />
+                </div>
+              )}
+            </div>
+          </div>
+        );
+
+        return (
+          <div className="max-w-3xl mx-auto grid gap-3">
+            {data.users.map(u=> <Card key={u.id} u={u}/>) }
+            {selected && <Detail u={data.users.find(x=> x.id===selected)}/>} 
+          </div>
+        );
+      }
+
+      function AdminUserEditor({user, onSave}){
+        const [form, setForm] = useState({ name:user.name, role:user.role, line:user.line, discord:user.discord, showBalance:user.showBalance, initialBalance: user.initialBalance });
+        return (
+          <div className="grid gap-3">
+            <div className="grid md:grid-cols-2 gap-3">
+              <div>
+                <label className="label">名前</label>
+                <input className="input" value={form.name} onChange={e=> setForm({...form, name:e.target.value})}/>
+              </div>
+              <div>
+                <label className="label">役割</label>
+                <select className="input" value={form.role} onChange={e=> setForm({...form, role:e.target.value})}>
+                  <option value="member">メンバー</option>
+                  <option value="admin">管理者</option>
+                </select>
+              </div>
+            </div>
+            <div className="grid md:grid-cols-2 gap-3">
+              <div>
+                <label className="label">LINE URL</label>
+                <input className="input" value={form.line} onChange={e=> setForm({...form, line:e.target.value})}/>
+              </div>
+              <div>
+                <label className="label">Discord URL</label>
+                <input className="input" value={form.discord} onChange={e=> setForm({...form, discord:e.target.value})}/>
+              </div>
+            </div>
+            <div className="grid md:grid-cols-2 gap-3">
+              <label className="label flex items-center gap-2"><input type="checkbox" checked={form.showBalance} onChange={e=> setForm({...form, showBalance:e.target.checked})}/> 残高を公開する</label>
+              <div>
+                <label className="label">初期残高</label>
+                <input type="number" className="input" value={form.initialBalance} onChange={e=> setForm({...form, initialBalance: Number(e.target.value)})}/>
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <button className="btn btn-primary" onClick={()=> onSave(form)}>保存</button>
+            </div>
+          </div>
+        );
+      }
+
+      // ----------------- Settings -----------------
+      function Settings({data, api, currentUser, onLogout}){
+        const [pw, setPw] = useState('');
+        const [msg, setMsg] = useState('');
+        const [initBal, setInitBal] = useState(currentUser.initialBalance||0);
+        const [show, setShow] = useState(!!currentUser.showBalance);
+
+        const saveAccount = ()=>{ if (!pw) return; api.updateUser(currentUser.id, { password: pw }); setPw(''); setMsg('パスワードを変更しました'); setTimeout(()=> setMsg(''), 2000); };
+        const saveInit = ()=>{ api.updateUser(currentUser.id, { initialBalance: Number(initBal) }); setMsg('初期残高を保存しました'); setTimeout(()=> setMsg(''), 2000); };
+        const saveShow = ()=>{ api.updateUser(currentUser.id, { showBalance: show }); setMsg('公開設定を保存しました'); setTimeout(()=> setMsg(''), 2000); };
+
+        return (
+          <div className="max-w-2xl mx-auto grid gap-4">
+            <section className="card p-4">
+              <h3 className="font-semibold mb-2">アカウント</h3>
+              <div className="grid md:grid-cols-3 gap-3 items-end">
+                <div className="md:col-span-2">
+                  <label className="label">新しいパスワード</label>
+                  <input className="input" type="password" value={pw} onChange={e=> setPw(e.target.value)} placeholder="••••••"/>
+                </div>
+                <button className="btn btn-primary" onClick={saveAccount}>変更</button>
+              </div>
+            </section>
+
+            <section className="card p-4">
+              <h3 className="font-semibold mb-2">初期残高</h3>
+              <div className="grid md:grid-cols-3 gap-3 items-end">
+                <div className="md:col-span-2">
+                  <input type="number" className="input" value={initBal} onChange={e=> setInitBal(Number(e.target.value))}/>
+                </div>
+                <button className="btn btn-primary" onClick={saveInit}>保存</button>
+              </div>
+            </section>
+
+            <section className="card p-4">
+              <h3 className="font-semibold mb-2">残高公開</h3>
+              <label className="label flex items-center gap-2"><input type="checkbox" checked={show} onChange={e=> setShow(e.target.checked)} /> メンバーに所持金を公開する</label>
+              <div className="mt-3"><button className="btn btn-primary" onClick={saveShow}>保存</button></div>
+            </section>
+
+            <div className="text-right text-sm text-brand-700">{msg}</div>
+
+            <div className="text-center">
+              <button className="btn btn-danger" onClick={onLogout}>ログアウト</button>
+              <p className="text-xs text-gray-500 mt-2">※ローカル保存のデータはそのまま残ります。</p>
+            </div>
+          </div>
+        );
+      }
+
+      // ----------------- Mount -----------------
+      ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+    </script>
+  </body>
+</html>
